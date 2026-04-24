@@ -121,7 +121,7 @@ def index():
                 formData.append('chunk_index', i);
                 formData.append('total_chunks', totalChunks);
                 
-                const response = await fetch('/upload/chunk', {
+                const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
@@ -160,29 +160,41 @@ def index():
     ''')
 
 
-@app.route('/upload/chunk', methods=['POST'])
-def upload_chunk():
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'file' in request.files:
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'Nenhum ficheiro selecionado'}), 400
+        if not allowed_file(file.filename):
+            return jsonify({'success': False, 'message': 'Apenas ficheiros ZIP são permitidos'}), 400
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{timestamp}_{file.filename}"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+        return jsonify({'success': True, 'message': f'Ficheiro {filename} enviado com sucesso!'})
+
     if 'chunk' not in request.files:
         return jsonify({'success': False, 'message': 'Nenhum chunk enviado'}), 400
-    
+
     chunk = request.files['chunk']
     upload_id = request.form.get('upload_id')
     chunk_index = int(request.form.get('chunk_index', 0))
     total_chunks = int(request.form.get('total_chunks', 1))
     filename = request.form.get('filename', '')
-    
+
     if not upload_id:
         return jsonify({'success': False, 'message': 'upload_id em falta'}), 400
-    
+
     if not allowed_file(filename):
         return jsonify({'success': False, 'message': 'Apenas ficheiros ZIP são permitidos'}), 400
-    
+
     chunk_dir = os.path.join(CHUNK_FOLDER, upload_id)
     os.makedirs(chunk_dir, exist_ok=True)
-    
+
     chunk_path = os.path.join(chunk_dir, f"{chunk_index:05d}")
     chunk.save(chunk_path)
-    
+
     return jsonify({'success': True, 'message': f'Chunk {chunk_index + 1}/{total_chunks} recebido'})
 
 
