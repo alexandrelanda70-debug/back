@@ -1,17 +1,18 @@
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
-import os
+import os, uuid
 from datetime import datetime
 
 app = Flask(__name__)
 
 UPLOAD_FOLDER = 'uploads'
+CHUNK_FOLDER = 'chunks'
 ALLOWED_EXTENSIONS = {'zip'}
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+CHUNK_SIZE = 2 * 1024 * 1024  # 2 MB por chunk
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(CHUNK_FOLDER, exist_ok=True)
 
 
 def allowed_file(filename):
@@ -64,6 +65,7 @@ def index():
         const form = document.querySelector('form');
         const messageDiv = document.getElementById('message');
         const filesDiv = document.getElementById('files');
+        const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
         
         async function loadFiles() {
             const response = await fetch('/uploads');
@@ -96,19 +98,57 @@ def index():
         
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const formData = new FormData(form);
+            const fileInput = form.querySelector('input[type="file"]');
+            const file = fileInput.files[0];
+            if (!file) return;
             
-            const response = await fetch('/upload', {
+            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+            const uploadId = crypto.randomUUID();
+            
+            messageDiv.style.display = 'block';
+            messageDiv.className = 'message success';
+            messageDiv.textContent = `A enviar... 0%`;
+            
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+                
+                const formData = new FormData();
+                formData.append('chunk', chunk);
+                formData.append('upload_id', uploadId);
+                formData.append('filename', file.name);
+                formData.append('chunk_index', i);
+                formData.append('total_chunks', totalChunks);
+                
+                const response = await fetch('/upload/chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                if (!result.success) {
+                    messageDiv.className = 'message error';
+                    messageDiv.textContent = result.message;
+                    return;
+                }
+                
+                const progress = Math.round(((i + 1) / totalChunks) * 100);
+                messageDiv.textContent = `A enviar... ${progress}%`;
+            }
+            
+            const completeResponse = await fetch('/upload/complete', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ upload_id: uploadId, filename: file.name })
             });
             
-            const result = await response.json();
-            messageDiv.style.display = 'block';
-            messageDiv.className = 'message ' + (result.success ? 'success' : 'error');
-            messageDiv.textContent = result.message;
+            const completeResult = await completeResponse.json();
+            messageDiv.className = 'message ' + (completeResult.success ? 'success' : 'error');
+            messageDiv.textContent = completeResult.message;
             
-            if (result.success) {
+            if (completeResult.success) {
+                fileInput.value = '';
                 loadFiles();
             }
         });
@@ -120,28 +160,64 @@ def index():
     ''')
 
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'Nenhum ficheiro enviado'}), 400
+@app.route('/upload/chunk', methods=['POST'])
+def upload_chunk():
+    if 'chunk' not in request.files:
+        return jsonify({'success': False, 'message': 'Nenhum chunk enviado'}), 400
     
-    file = request.files['file']
+    chunk = request.files['chunk']
+    upload_id = request.form.get('upload_id')
+    chunk_index = int(request.form.get('chunk_index', 0))
+    total_chunks = int(request.form.get('total_chunks', 1))
+    filename = request.form.get('filename', '')
     
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'Nenhum ficheiro selecionado'}), 400
+    if not upload_id:
+        return jsonify({'success': False, 'message': 'upload_id em falta'}), 400
     
-    if not allowed_file(file.filename):
+    if not allowed_file(filename):
         return jsonify({'success': False, 'message': 'Apenas ficheiros ZIP são permitidos'}), 400
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{timestamp}_{file.filename}"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    chunk_dir = os.path.join(CHUNK_FOLDER, upload_id)
+    os.makedirs(chunk_dir, exist_ok=True)
     
-    file.save(filepath)
+    chunk_path = os.path.join(chunk_dir, f"{chunk_index:05d}")
+    chunk.save(chunk_path)
+    
+    return jsonify({'success': True, 'message': f'Chunk {chunk_index + 1}/{total_chunks} recebido'})
+
+
+@app.route('/upload/complete', methods=['POST'])
+def upload_complete():
+    data = request.get_json()
+    upload_id = data.get('upload_id')
+    filename = data.get('filename', '')
+    
+    if not upload_id:
+        return jsonify({'success': False, 'message': 'upload_id em falta'}), 400
+    
+    chunk_dir = os.path.join(CHUNK_FOLDER, upload_id)
+    if not os.path.exists(chunk_dir):
+        return jsonify({'success': False, 'message': 'Upload não encontrado'}), 404
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    final_filename = f"{timestamp}_{filename}"
+    final_path = os.path.join(UPLOAD_FOLDER, final_filename)
+    
+    chunk_files = sorted(os.listdir(chunk_dir))
+    
+    with open(final_path, 'wb') as outfile:
+        for chunk_name in chunk_files:
+            chunk_path = os.path.join(chunk_dir, chunk_name)
+            with open(chunk_path, 'rb') as infile:
+                outfile.write(infile.read())
+    
+    for chunk_name in chunk_files:
+        os.remove(os.path.join(chunk_dir, chunk_name))
+    os.rmdir(chunk_dir)
     
     return jsonify({
         'success': True,
-        'message': f'Ficheiro {filename} enviado com sucesso!'
+        'message': f'Ficheiro {final_filename} enviado com sucesso!'
     })
 
 
