@@ -38,8 +38,10 @@ def index():
         .error { background: #f8d7da; color: #721c24; }
         .file-list { margin-top: 30px; }
         .file-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        .file-item a { color: #007bff; text-decoration: none; }
+        .file-item a { color: #007bff; text-decoration: none; margin-right: 10px; }
         .file-item a:hover { text-decoration: underline; }
+        .delete-btn { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; }
+        .delete-btn:hover { background: #c82333; }
     </style>
 </head>
 <body>
@@ -69,9 +71,27 @@ def index():
             filesDiv.innerHTML = data.files.map(f => 
                 `<div class="file-item">
                     <span>${f}</span>
-                    <a href="/download/${f}">Download</a>
+                    <div>
+                        <a href="/download/${f}">Download</a>
+                        <button class="delete-btn" onclick="deleteFile('${f}')">Eliminar</button>
+                    </div>
                 </div>`
             ).join('') || '<p>Nenhum ficheiro.</p>';
+        }
+        
+        async function deleteFile(filename) {
+            if (!confirm('Tem a certeza que deseja eliminar este ficheiro?')) return;
+            
+            const response = await fetch(`/delete/${filename}`, { method: 'DELETE' });
+            const result = await response.json();
+            
+            messageDiv.style.display = 'block';
+            messageDiv.className = 'message ' + (result.success ? 'success' : 'error');
+            messageDiv.textContent = result.message;
+            
+            if (result.success) {
+                loadFiles();
+            }
         }
         
         form.addEventListener('submit', async (e) => {
@@ -134,6 +154,15 @@ def list_uploads():
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+
+
+@app.route('/delete/<filename>', methods=['DELETE'])
+def delete_file(filename):
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        return jsonify({'success': True, 'message': f'Ficheiro {filename} eliminado'})
+    return jsonify({'success': False, 'message': 'Ficheiro não encontrado'}), 404
 
 
 if __name__ == '__main__':
